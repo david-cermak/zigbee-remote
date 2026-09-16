@@ -1,0 +1,37 @@
+menu "PPP UART Zigbee RPC server"
+
+    config PPP_UART_TX_PIN
+        int "PPP UART TX pin"
+        range 0 27
+        default 10
+
+    config PPP_UART_RX_PIN
+        int "PPP UART RX pin"
+        range 0 27
+        default 11
+
+    config PPP_UART_BAUD_RATE
+        int "PPP UART baud rate"
+        range 9600 3000000
+        default 115200
+
+    config PPP_MTU
+        int "PPP IPv4 MTU"
+        range 576 1500
+        default 1500
+
+    config PPP_TCP_SERVER_PORT
+        int "TCP RPC server port"
+        range 1 65535
+        default 3333
+
+    config ZB_EXAMPLE_PRIMARY_CHANNEL
+        int "Primary Zigbee channel"
+        range 11 26
+        default 13
+
+    config ZB_EXAMPLE_SECONDARY_CHANNEL_MASK
+        hex "Secondary Zigbee channel mask"
+        default 0x07FFF800
+
+endmenu

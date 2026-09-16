@@ -48,7 +48,6 @@ build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
 install_manifest.txt
 compile_commands.json
 
@@ -67,3 +66,11 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Components Build files (includes examples & tests)
+/build
+sdkconfig
+sdkconfig.old
+managed_components
+dependencies.lock
+cmake-build-*/

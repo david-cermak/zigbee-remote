@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Create a persistent TUN interface for ppp_lwip_server.
+#
+# Usage: ./make_tun_netif [ifname] [local_ip] [peer_ip] [user] [ipv6]
+#
+# Defaults match protocol_examples_common README PPP example:
+#   ./make_tun_netif tun0 192.168.11.1 192.168.11.2
+#
+# Pass "ipv6" as the 5th argument to enable IPv6 on the TUN device:
+#   ./make_tun_netif tun0 192.168.11.1 192.168.11.2 "$(whoami)" ipv6
+
+set -euo pipefail
+
+IFNAME="${1:-tun0}"
+LOCAL_IP="${2:-192.168.11.1}"
+PEER_IP="${3:-192.168.11.2}"
+USER_NAME="${4:-$(whoami)}"
+ENABLE_IPV6="${5:-}"
+
+sudo ip tuntap add mode tun name "${IFNAME}" user "${USER_NAME}"
+sudo ip link set dev "${IFNAME}" up
+sudo ip addr add "${LOCAL_IP}/32" dev "${IFNAME}"
+sudo ip route add "${PEER_IP}/32" dev "${IFNAME}"
+
+if [ "${ENABLE_IPV6}" = "ipv6" ]; then
+    sudo sysctl -w "net.ipv6.conf.${IFNAME}.disable_ipv6=0"
+    echo "IPv6 enabled on ${IFNAME} (link-local addresses come from PPP IPv6CP)"
+fi
+
+echo "Created ${IFNAME}: local ${LOCAL_IP}, route to peer ${PEER_IP}"

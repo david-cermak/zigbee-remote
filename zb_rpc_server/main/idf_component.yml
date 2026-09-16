@@ -1,0 +1,8 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf:
+    version: ">=5.2"
+  espressif/esp-zigbee-lib:
+    version: ">=2.0.0"
+  alarm_timer:
+    path: "/home/david/repos/zigbee-remote/other_projects/esp-zigbee-sdk/examples/utils/alarm_timer"
