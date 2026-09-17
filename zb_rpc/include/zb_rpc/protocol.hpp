@@ -155,21 +155,6 @@ struct rpc_desc {
     using resp_type = Resp;
 };
 
-namespace desc {
-using get_short_addr = rpc_desc<api_id::get_short_addr, EmptyReq, U16Resp>;
-using get_panid = rpc_desc<api_id::get_panid, EmptyReq, U16Resp>;
-using get_channel = rpc_desc<api_id::get_channel, EmptyReq, U8Resp>;
-using open_network = rpc_desc<api_id::open_network, OpenNetworkReq, I32Resp>;
-using wait_annce = rpc_desc<api_id::wait_annce, EmptyReq, U16Resp>;
-using find_sensor = rpc_desc<api_id::find_sensor, FindSensorReq, zb_addr_t>;
-using read_basic = rpc_desc<api_id::read_basic, zb_addr_t, zb_basic_t>;
-using bind_sensor = rpc_desc<api_id::bind_sensor, zb_addr_t, I32Resp>;
-using subscribe_sensor = rpc_desc<api_id::subscribe_sensor, zb_addr_t, I32Resp>;
-using config_report = rpc_desc<api_id::config_report, zb_addr_t, I32Resp>;
-using read_temp = rpc_desc<api_id::read_temp, zb_addr_t, zb_temp_t>;
-using get_last_temp = rpc_desc<api_id::get_last_temp, EmptyReq, I16Resp>;
-} // namespace desc
-
 static_assert(sizeof(WireHeader) == 12);
 static_assert(sizeof(ErrorResp) == 4);
 static_assert(sizeof(U16Resp) == 2);

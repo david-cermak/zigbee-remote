@@ -1,3 +1,4 @@
+#include "zb_rpc/catalog.hpp"
 #include "zb_rpc/engine.hpp"
 #include "zb_rpc/log.hpp"
 #include "zb_rpc/sock.hpp"
@@ -32,9 +33,8 @@ int main(int argc, char **argv)
     U16Resp short_addr_resp{};
     U16Resp panid_resp{};
     U8Resp channel_resp{};
-    if (!call<desc::get_short_addr>(engine, short_addr_resp) ||
-        !call<desc::get_panid>(engine, panid_resp) ||
-        !call<desc::get_channel>(engine, channel_resp)) {
+    if (!api::get_short_addr(engine, short_addr_resp) || !api::get_panid(engine, panid_resp) ||
+        !api::get_channel(engine, channel_resp)) {
         ::close(fd);
         return 1;
     }
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
     OpenNetworkReq open_req{.duration = 180};
     I32Resp open_resp{};
-    if (!call<desc::open_network>(engine, open_req, open_resp) || from_le32_s(open_resp.value) != 0) {
+    if (!api::open_network(engine, open_req, open_resp) || from_le32_s(open_resp.value) != 0) {
         ZB_RPC_LOG(k_tag, "Failed to open network");
         ::close(fd);
         return 1;
@@ -52,7 +52,7 @@ int main(int argc, char **argv)
     ZB_RPC_LOG(k_tag, "Network(0x%04x) is open for %u seconds", panid, open_req.duration);
 
     U16Resp peer_resp{};
-    if (!call<desc::wait_annce>(engine, peer_resp)) {
+    if (!api::wait_annce(engine, peer_resp)) {
         ::close(fd);
         return 1;
     }
@@ -62,7 +62,7 @@ int main(int argc, char **argv)
     ZB_RPC_LOG(k_tag, "Attempt to find HA temperature sensor device on address(0x%04x)", peer);
     FindSensorReq find_req{.short_addr = to_le16(peer)};
     zb_addr_t sensor{};
-    if (!call<desc::find_sensor>(engine, find_req, sensor) || from_le32_s(sensor.err) != 0) {
+    if (!api::find_sensor(engine, find_req, sensor) || from_le32_s(sensor.err) != 0) {
         ZB_RPC_LOG(k_tag, "Failed to find HA temperature sensor");
         ::close(fd);
         return 1;
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
     ZB_RPC_LOG(k_tag, "Attempt to read manuf_code and model_id from device (0x%04x, 0x%02x)",
                from_le16(sensor.short_addr), sensor.ep);
     zb_basic_t basic{};
-    if (!call<desc::read_basic>(engine, sensor, basic)) {
+    if (!api::read_basic(engine, sensor, basic)) {
         ::close(fd);
         return 1;
     }
@@ -84,16 +84,16 @@ int main(int argc, char **argv)
     ZB_RPC_LOG(k_tag, "Attempt to bind temperature sensor device (0x%04x, 0x%02x) to local",
                from_le16(sensor.short_addr), sensor.ep);
     I32Resp bind_resp{};
-    call<desc::bind_sensor>(engine, sensor, bind_resp);
+    api::bind_sensor(engine, sensor, bind_resp);
     ZB_RPC_LOG(k_tag, "Attempt to subscribe temperature sensor device (0x%04x, 0x%02x) from local",
                from_le16(sensor.short_addr), sensor.ep);
     I32Resp sub_resp{};
-    call<desc::subscribe_sensor>(engine, sensor, sub_resp);
+    api::subscribe_sensor(engine, sensor, sub_resp);
     ZB_RPC_LOG(k_tag, "Bound HA temperature sensor device (0x%04x, 0x%02x) to local successfully",
                short_addr, sensor.ep);
     ZB_RPC_LOG(k_tag, "Attempt to configure reporting for HA temperature sensor");
     I32Resp cfg_resp{};
-    call<desc::config_report>(engine, sensor, cfg_resp);
+    api::config_report(engine, sensor, cfg_resp);
     ZB_RPC_LOG(k_tag, "Network(0x%04x) is open for %u seconds", panid, open_req.duration);
     ZB_RPC_LOG(k_tag,
                "Subscribed HA temperature sensor device (0x%04x, 0x%02x) from local successfully",
@@ -104,7 +104,7 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < 5; ++i) {
         I16Resp t{};
-        if (!call<desc::get_last_temp>(engine, t)) {
+        if (!api::get_last_temp(engine, t)) {
             break;
         }
         ZB_RPC_LOG(k_tag,
@@ -115,7 +115,7 @@ int main(int argc, char **argv)
     }
 
     zb_temp_t attrs{};
-    if (!call<desc::read_temp>(engine, sensor, attrs)) {
+    if (!api::read_temp(engine, sensor, attrs)) {
         ::close(fd);
         return 1;
     }
