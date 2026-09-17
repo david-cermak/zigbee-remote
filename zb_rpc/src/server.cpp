@@ -1,5 +1,6 @@
 #include "sim_zigbee.hpp"
 
+#include "zb_rpc/dispatch.hpp"
 #include "zb_rpc/engine.hpp"
 #include "zb_rpc/log.hpp"
 #include "zb_rpc/sock.hpp"
@@ -22,40 +23,20 @@ static bool handle_commands(Engine &engine)
         return false;
     }
 
-    invoke_result result = invoke_one<desc::get_short_addr, ^^sim::get_short_addr>(engine, header);
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::get_panid, ^^sim::get_panid>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::get_channel, ^^sim::get_channel>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::open_network, ^^sim::open_network>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::wait_annce, ^^sim::wait_annce>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::find_sensor, ^^sim::find_sensor>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::read_basic, ^^sim::read_basic>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::bind_sensor, ^^sim::bind_sensor>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::subscribe_sensor, ^^sim::subscribe_sensor>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::config_report, ^^sim::config_report>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::read_temp, ^^sim::read_temp>(engine, header);
-    }
-    if (result == invoke_result::no_match) {
-        result = invoke_one<desc::get_last_temp, ^^sim::get_last_temp>(engine, header);
-    }
+    const invoke_result result = dispatch<
+        handler<desc::get_short_addr, ^^sim::get_short_addr>,
+        handler<desc::get_panid, ^^sim::get_panid>,
+        handler<desc::get_channel, ^^sim::get_channel>,
+        handler<desc::open_network, ^^sim::open_network>,
+        handler<desc::wait_annce, ^^sim::wait_annce>,
+        handler<desc::find_sensor, ^^sim::find_sensor>,
+        handler<desc::read_basic, ^^sim::read_basic>,
+        handler<desc::bind_sensor, ^^sim::bind_sensor>,
+        handler<desc::subscribe_sensor, ^^sim::subscribe_sensor>,
+        handler<desc::config_report, ^^sim::config_report>,
+        handler<desc::read_temp, ^^sim::read_temp>,
+        handler<desc::get_last_temp, ^^sim::get_last_temp>>(engine, header);
+
     if (result == invoke_result::no_match) {
         ZB_RPC_LOG("server", "unknown api_id %s", api_name(header.id));
         if (!engine.discard_payload(header.size)) {
