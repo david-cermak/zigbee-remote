@@ -12,7 +12,6 @@ Zigbee stays on an ESP32-H2. The host runs the application (thermostat sequence 
 | [zb_rpc_server/](zb_rpc_server/) | ESP32-H2: Zigbee stack + PPP UART + RPC server |
 | [zb_rpc_client/](zb_rpc_client/) | Linux: smolppp PPP/TUN + thermostat client over RPC |
 | [zb_rpc/](zb_rpc/) | Earlier host-only simulation (localhost TCP + fake Zigbee) |
-| [docs/](docs/) | Marp talk + audio-book narration on the reflection RPC |
 
 ## Status
 
