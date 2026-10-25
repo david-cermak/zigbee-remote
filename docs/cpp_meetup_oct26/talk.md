@@ -133,7 +133,7 @@ Pretty-printing structs in C++
 
 ---
 
-# C++ Reflection: 1) Write code
+# C++ Reflection: 2) Write code
 
 https://godbolt.org/z/3PWPT1dEW
 Generates vtable: credit Ryan Keane https://github.com/RyanJK5/rjk-duck
@@ -320,8 +320,23 @@ If production does not support C++ 26, you can still
 
 ---
 
+# Practical lessons: Constructs
+
+| Construct | Role (here) |
+| --- | --- |
+| `^^T` | reflect a type / function |
+| `[: info :]` | splice reflection → C++ entity |
+| `template for` | compile-time loop over members/enums |
+| `nonstatic_data_members_of` | struct walk |
+| `enumerators_of` | enum walk |
+| `identifier_of` | printable names |
+| `type_of` / `is_*_type` | classify |
+| `reflect_constant_array` | materialize a reflection range |
+
+---
+
 # C++ Reflection: WYT now?
 
-🟢 **Geat feature!**
+🟢 **Great feature!**
 🔴 **Doesn't belong to C++**
 ⚪ **Don't care**
