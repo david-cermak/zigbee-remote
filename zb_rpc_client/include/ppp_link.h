@@ -47,11 +47,19 @@ struct ppp_link_io {
 };
 
 ppp_link_t *ppp_link_create(const ppp_link_config_t *config);
+/* Wire up the output callback (and attach the serial input) before calling
+ * this.  ppp_link_create() only allocates the link and opens the TUN device;
+ * ppp_link_start() creates the lwIP PCB and sends the first LCP frame. */
+int ppp_link_start(ppp_link_t *link);
+/* Best-effort LCP terminate so the peer can restart immediately instead of
+ * waiting for echo timeouts.  Call before detaching the serial output. */
+void ppp_link_stop(ppp_link_t *link);
 void ppp_link_destroy(ppp_link_t *link);
 void ppp_link_set_output(ppp_link_t *link, ppp_link_output_fn fn, void *ctx);
 void ppp_link_input(ppp_link_t *link, const uint8_t *data, size_t len);
 struct ppp_link_io *ppp_link_io(ppp_link_t *link);
 int ppp_link_lwip_init(ppp_link_t *link);
+void ppp_link_lwip_stop(void);
 int ppp_link_tun_poll(ppp_link_t *link);
 void ppp_link_serial_input(const uint8_t *data, size_t len);
 int ppp_link_is_up(void);

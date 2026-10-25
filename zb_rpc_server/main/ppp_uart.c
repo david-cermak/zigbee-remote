@@ -8,14 +8,17 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_net_stack.h"
 #include "esp_netif_ppp.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "lwip/netif.h"
+#include "netif/ppp/ppp.h"
 #include "sdkconfig.h"
 
 #define PPP_UART_PORT UART_NUM_1
 #define PPP_LINK_UP BIT0
-#define PPP_PHASE_DEAD BIT1
+#define PPP_UART_PHASE_DEAD BIT1
 #define PPP_RX_CHUNK_SIZE 1024
 #define PPP_RX_RING_SIZE ((CONFIG_PPP_MTU * 2) + 128)
 #define PPP_RECONNECT_DELAY_MS 1000
@@ -50,6 +53,20 @@ static esp_netif_driver_ifconfig_t s_driver_config = {
     .transmit = uart_transmit,
 };
 
+/* lwIP defaults to a 6 s FSM retransmit timeout.  On a short, dedicated UART
+ * that makes bringing the link up (and tearing it down after the host goes
+ * away) needlessly slow.  The PPP PCB is the lwIP netif's state, created by
+ * esp_netif_new() above. */
+static void configure_ppp_timers(void)
+{
+    struct netif *netif = esp_netif_get_netif_impl(s_netif);
+    ppp_pcb *pcb = netif != NULL ? (ppp_pcb *)netif->state : NULL;
+
+    if (pcb != NULL) {
+        pcb->settings.fsm_timeout_time = 1;
+    }
+}
+
 static bool event_is_for_our_netif(void *event_data)
 {
     const ip_event_got_ip_t *event = event_data;
@@ -77,7 +94,7 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t event_id, void
         const ip_event_got_ip_t *event = event_data;
         ESP_LOGI(TAG, "PPP up: " IPSTR ", peer " IPSTR ", MTU %d",
                  IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.gw), CONFIG_PPP_MTU);
-        xEventGroupClearBits(s_link_events, PPP_PHASE_DEAD);
+        xEventGroupClearBits(s_link_events, PPP_UART_PHASE_DEAD);
         xEventGroupSetBits(s_link_events, PPP_LINK_UP);
     } else if (event_id == IP_EVENT_PPP_LOST_IP) {
         ESP_LOGW(TAG, "PPP link lost; scheduling reconnect");
@@ -92,7 +109,7 @@ static void on_ppp_status(void *arg, esp_event_base_t base, int32_t event_id, vo
     (void)event_data;
 
     if (event_id == NETIF_PPP_PHASE_DEAD) {
-        xEventGroupSetBits(s_link_events, PPP_PHASE_DEAD);
+        xEventGroupSetBits(s_link_events, PPP_UART_PHASE_DEAD);
         return;
     }
     if (event_id == NETIF_PPP_ERRORNONE ||
@@ -157,16 +174,16 @@ static void reconnect_task(void *arg)
         ESP_LOGI(TAG, "Stopping failed PPP session");
         esp_netif_action_disconnected(s_netif, NULL, 0, NULL);
         EventBits_t bits = xEventGroupWaitBits(
-            s_link_events, PPP_PHASE_DEAD, pdFALSE, pdTRUE,
+            s_link_events, PPP_UART_PHASE_DEAD, pdFALSE, pdTRUE,
             pdMS_TO_TICKS(PPP_STOP_TIMEOUT_MS));
-        if ((bits & PPP_PHASE_DEAD) == 0) {
+        if ((bits & PPP_UART_PHASE_DEAD) == 0) {
             ESP_LOGW(TAG, "PPP did not reach dead phase; retrying stop");
             xTaskNotifyGive(s_reconnect_task);
             continue;
         }
 
         esp_netif_action_stop(s_netif, NULL, 0, NULL);
-        xEventGroupClearBits(s_link_events, PPP_PHASE_DEAD);
+        xEventGroupClearBits(s_link_events, PPP_UART_PHASE_DEAD);
         ESP_LOGI(TAG, "Restarting PPP negotiation from dead phase");
         esp_netif_action_start(s_netif, NULL, 0, NULL);
         esp_netif_action_connected(s_netif, NULL, 0, NULL);
@@ -215,6 +232,7 @@ esp_err_t ppp_uart_start(void)
     if (s_netif == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    configure_ppp_timers();
 
     esp_netif_ppp_config_t ppp_config;
     ESP_RETURN_ON_ERROR(esp_netif_ppp_get_params(s_netif, &ppp_config), TAG,

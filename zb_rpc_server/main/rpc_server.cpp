@@ -22,7 +22,28 @@ namespace {
 constexpr int k_socket_poll_seconds = 1;
 constexpr uint32_t k_rpc_timeout_ms = 15000;
 constexpr uint32_t k_annce_timeout_ms = 180000;
+constexpr uint32_t k_annce_slice_ms = 250;
 constexpr const char *k_tag = "rpc_server";
+
+/* Only one client is served at a time, so the accepted fd can live here and
+ * be watched from inside long-running handlers. */
+int s_client_fd = -1;
+
+bool client_connected()
+{
+    if (s_client_fd < 0) {
+        return false;
+    }
+    uint8_t byte = 0;
+    int result = recv(s_client_fd, &byte, sizeof(byte), MSG_PEEK | MSG_DONTWAIT);
+    if (result > 0) {
+        return true; /* data pending but not consumed */
+    }
+    if (result == 0) {
+        return false; /* orderly shutdown from the peer */
+    }
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
 
 void set_listener_timeout(int socket_fd)
 {
@@ -53,7 +74,28 @@ zb_rpc::I32Resp handle_open_network(zb_rpc::OpenNetworkReq request)
 
 zb_rpc::U16Resp handle_wait_annce()
 {
-    return {.value = zb_rpc::to_le16(zigbee_wait_annce(k_annce_timeout_ms))};
+    /* Wait in short slices so a vanished client cannot leave the single RPC
+     * task blocked for the whole commissioning window.  This lets a re-run
+     * connect and be served without restarting the ESP. */
+    uint32_t remaining = k_annce_timeout_ms;
+    while (remaining > 0) {
+        if (!ppp_uart_is_connected() || !client_connected()) {
+            ZB_RPC_LOG(k_tag, "Client went away while waiting for DEVICE_ANNCE");
+            return {.value = zb_rpc::to_le16(0)};
+        }
+        uint32_t slice = remaining < k_annce_slice_ms ? remaining : k_annce_slice_ms;
+        uint16_t short_addr = zigbee_wait_annce(slice);
+        if (short_addr != 0) {
+            return {.value = zb_rpc::to_le16(short_addr)};
+        }
+        remaining -= slice;
+    }
+    return {.value = zb_rpc::to_le16(0)};
+}
+
+zb_rpc::U16Resp handle_get_sensor_addr()
+{
+    return {.value = zb_rpc::to_le16(zigbee_get_sensor_addr())};
 }
 
 zb_rpc::zb_addr_t handle_find_sensor(zb_rpc::FindSensorReq request)
@@ -158,6 +200,10 @@ bool dispatch(zb_rpc::Engine &engine, const zb_rpc::FrameHeader &header)
             zb_rpc::invoke_one<zb_rpc::desc::get_last_temp, ^^handle_get_last_temp>(engine, header);
     }
     if (result == zb_rpc::invoke_result::no_match) {
+        result = zb_rpc::invoke_one<zb_rpc::desc::get_sensor_addr, ^^handle_get_sensor_addr>(
+            engine, header);
+    }
+    if (result == zb_rpc::invoke_result::no_match) {
         ZB_RPC_LOG(k_tag, "unknown API id");
         if (!engine.discard_payload(header.size)) {
             return false;
@@ -170,6 +216,7 @@ bool dispatch(zb_rpc::Engine &engine, const zb_rpc::FrameHeader &header)
 
 void serve_client(int client_fd)
 {
+    s_client_fd = client_fd;
     zb_rpc::Engine engine(client_fd);
     while (ppp_uart_is_connected()) {
         zb_rpc::FrameHeader header{};
@@ -183,6 +230,7 @@ void serve_client(int client_fd)
             break;
         }
     }
+    s_client_fd = -1;
 }
 
 int create_listener()

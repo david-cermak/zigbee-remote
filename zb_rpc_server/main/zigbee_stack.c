@@ -36,6 +36,7 @@ static SemaphoreHandle_t s_report_done;
 static zigbee_basic_t s_basic_cache;
 static zigbee_temp_t s_temp_cache;
 static int16_t s_last_temp;
+static uint16_t s_last_sensor_addr;
 static int32_t s_bind_err;
 static int32_t s_report_err;
 
@@ -240,6 +241,12 @@ static void zcl_report_attr(ezb_zcl_cmd_report_attr_message_t *message)
     if (!message || message->info.cluster_id != EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT) {
         return;
     }
+    /* Reports arrive over an existing binding, so their source address is a
+     * reliable way to recover the sensor after a reboot without waiting for a
+     * fresh DEVICE_ANNCE. */
+    if (message->in.header && message->in.header->src_addr.addr_mode == EZB_ADDR_MODE_SHORT) {
+        s_last_sensor_addr = message->in.header->src_addr.u.short_addr;
+    }
     for (ezb_zcl_report_attr_variable_t *var = message->in.variables; var; var = var->next) {
         if (var->attr_id == EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID) {
             s_last_temp = *(int16_t *)var->attr_value;
@@ -356,6 +363,11 @@ uint8_t zigbee_get_channel(void)
     return value;
 }
 
+uint16_t zigbee_get_sensor_addr(void)
+{
+    return s_last_sensor_addr;
+}
+
 int32_t zigbee_open_network(uint8_t duration)
 {
     esp_zigbee_lock_acquire(portMAX_DELAY);
@@ -401,6 +413,9 @@ zigbee_addr_t zigbee_find_sensor(uint16_t short_addr, uint32_t timeout_ms)
     }
     if (xQueueReceive(s_match_q, &out, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         out.err = -2;
+    } else if (out.err == 0) {
+        /* Remember the sensor so a later client run can skip commissioning. */
+        s_last_sensor_addr = out.short_addr;
     }
     return out;
 }

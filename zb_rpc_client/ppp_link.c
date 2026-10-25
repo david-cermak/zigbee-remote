@@ -25,6 +25,7 @@ struct ppp_link {
     uint8_t out_buf[BUF_SIZE];
     pthread_t tun_thread;
     volatile int running;
+    int thread_started;
 };
 
 static void *tun_thread(void *arg)
@@ -74,26 +75,49 @@ ppp_link_t *ppp_link_create(const ppp_link_config_t *config)
         ioctl(link->io.tun_fd, TUNSETNOCSUM, 1);
     }
 
+    return link;
+}
+
+int ppp_link_start(ppp_link_t *link)
+{
+    if (!link) {
+        return 0;
+    }
+
+    /* Start lwIP only after the transport callbacks are in place: the very
+     * first LCP Configure-Request is emitted from here, and dropping it costs
+     * a full FSM timeout (6 s) before negotiation can continue. */
     if (!ppp_link_lwip_init(link)) {
-        if (link->io.tun_fd >= 0) {
-            close(link->io.tun_fd);
-        }
-        free(link);
-        return NULL;
+        return 0;
     }
 
     link->running = 1;
     if (pthread_create(&link->tun_thread, NULL, tun_thread, link) != 0) {
         perror("pthread_create");
         link->running = 0;
-        if (link->io.tun_fd >= 0) {
-            close(link->io.tun_fd);
-        }
-        free(link);
-        return NULL;
+        return 0;
     }
+    link->thread_started = 1;
+    return 1;
+}
 
-    return link;
+static void stop_tun_thread(ppp_link_t *link)
+{
+    if (link->thread_started) {
+        link->running = 0;
+        pthread_join(link->tun_thread, NULL);
+        link->thread_started = 0;
+    }
+}
+
+void ppp_link_stop(ppp_link_t *link)
+{
+    if (!link) {
+        return;
+    }
+    /* Stop the timeout/TUN thread before touching the PPP state machine. */
+    stop_tun_thread(link);
+    ppp_link_lwip_stop();
 }
 
 void ppp_link_destroy(ppp_link_t *link)
@@ -101,8 +125,7 @@ void ppp_link_destroy(ppp_link_t *link)
     if (!link) {
         return;
     }
-    link->running = 0;
-    pthread_join(link->tun_thread, NULL);
+    stop_tun_thread(link);
     if (link->io.tun_fd >= 0) {
         close(link->io.tun_fd);
     }

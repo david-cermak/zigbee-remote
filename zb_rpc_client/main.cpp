@@ -3,8 +3,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <getopt.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -15,6 +18,32 @@
 namespace {
 
 constexpr const char *k_tag = "THERMOSTAT";
+
+volatile sig_atomic_t g_stop_requested = 0;
+volatile sig_atomic_t g_rpc_socket = -1;
+
+/* Shut the RPC socket down so a blocking read returns and the server sees an
+ * orderly disconnect.  This is important when the user interrupts the long
+ * DEVICE_ANNCE wait: without it the ESP stays blocked in that handler and the
+ * next client run is never served. */
+void on_signal(int)
+{
+    g_stop_requested = 1;
+    const int fd = g_rpc_socket;
+    if (fd >= 0) {
+        ::shutdown(fd, SHUT_RDWR);
+    }
+}
+
+void install_signal_handlers()
+{
+    struct sigaction action {};
+    action.sa_handler = on_signal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    sigaction(SIGINT, &action, nullptr);
+    sigaction(SIGTERM, &action, nullptr);
+}
 
 struct Options {
     const char *device = "/dev/ttyUSB1";
@@ -65,6 +94,9 @@ bool parse_options(int argc, char **argv, Options &options)
 bool wait_for_link(int seconds)
 {
     for (int elapsed = 0; elapsed < seconds * 10; ++elapsed) {
+        if (g_stop_requested) {
+            return false;
+        }
         if (ppp_link_is_up()) {
             return true;
         }
@@ -84,16 +116,50 @@ int connect_rpc(const char *host, uint16_t port)
     }
 
     for (int attempt = 0; attempt < 50; ++attempt) {
+        if (g_stop_requested) {
+            return -1;
+        }
         int socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (socket_fd < 0) {
             return -1;
         }
-        if (connect(socket_fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) ==
-            0) {
+
+        /* A blocking connect over the TUN can hang for minutes while the ESP
+         * is still restarting PPP, which also makes Ctrl-C ineffective. */
+        const int flags = fcntl(socket_fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socket_fd);
+            return -1;
+        }
+
+        int result =
+            connect(socket_fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address));
+        if (result == 0) {
+            fcntl(socket_fd, F_SETFL, flags);
             return socket_fd;
         }
+
+        if (errno == EINPROGRESS || errno == EWOULDBLOCK || errno == EINTR) {
+            pollfd waiting{.fd = socket_fd, .events = POLLOUT, .revents = 0};
+            int ready;
+            do {
+                ready = poll(&waiting, 1, 200);
+            } while (ready < 0 && errno == EINTR && !g_stop_requested);
+            if (ready > 0) {
+                int error = 0;
+                socklen_t length = sizeof(error);
+                if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 &&
+                    error == 0) {
+                    fcntl(socket_fd, F_SETFL, flags);
+                    return socket_fd;
+                }
+            }
+        }
+
         close(socket_fd);
-        usleep(200000);
+        if (!g_stop_requested) {
+            usleep(200000);
+        }
     }
     std::fprintf(stderr, "RPC connect to %s:%u failed: %s\n", host, static_cast<unsigned>(port),
                  std::strerror(errno));
@@ -105,7 +171,27 @@ float to_celsius(int16_t hundredths)
     return hundredths / 100.0f;
 }
 
-bool run_thermostat(int socket_fd)
+void print_temp_attrs(const zb_rpc::zb_temp_t &attrs)
+{
+    using namespace zb_rpc;
+    ZB_RPC_LOG(k_tag, "Read Attributes of Temperature Measurement");
+    ZB_RPC_LOG(k_tag, "Measured value: %.2f degrees Celsius",
+               to_celsius(from_le16_s(attrs.measured)));
+    ZB_RPC_LOG(k_tag, "Min measured value: %.2f degrees Celsius",
+               to_celsius(from_le16_s(attrs.min_measured)));
+    ZB_RPC_LOG(k_tag, "Max measured value: %.2f degrees Celsius",
+               to_celsius(from_le16_s(attrs.max_measured)));
+}
+
+enum class RunResult {
+    success,
+    failure,
+    /* The server predates get_sensor_addr and closed the connection after
+     * rejecting it; reconnect and use the old commissioning flow. */
+    retry_without_cache,
+};
+
+RunResult run_thermostat(int socket_fd, bool probe_cached_sensor)
 {
     using namespace zb_rpc;
     Engine engine(socket_fd);
@@ -118,86 +204,114 @@ bool run_thermostat(int socket_fd)
     U8Resp channel{};
     if (!call<desc::get_short_addr>(engine, short_addr) ||
         !call<desc::get_panid>(engine, panid) || !call<desc::get_channel>(engine, channel)) {
-        return false;
+        return RunResult::failure;
     }
-    (void)channel;
 
-    OpenNetworkReq open{.duration = 180};
-    I32Resp open_status{};
-    if (!call<desc::open_network>(engine, open, open_status) ||
-        from_le32_s(open_status.value) != 0) {
-        ZB_RPC_LOG(k_tag, "Failed to open network");
-        return false;
-    }
-    ZB_RPC_LOG(k_tag, "Network(0x%04x) is open for %u seconds", from_le16(panid.value),
-               open.duration);
-
-    U16Resp peer{};
-    if (!call<desc::wait_annce>(engine, peer) || from_le16(peer.value) == 0) {
-        ZB_RPC_LOG(k_tag, "Timed out waiting for DEVICE_ANNCE");
-        return false;
-    }
-    ZB_RPC_LOG(k_tag, "New device commissioned or rejoined (short: 0x%04x)",
-               from_le16(peer.value));
-
-    ZB_RPC_LOG(k_tag, "Attempt to find HA temperature sensor device on address(0x%04x)",
-               from_le16(peer.value));
     zb_addr_t sensor{};
-    if (!call<desc::find_sensor>(engine, FindSensorReq{.short_addr = peer.value}, sensor) ||
-        from_le32_s(sensor.err) != 0) {
-        ZB_RPC_LOG(k_tag, "Failed to find HA temperature sensor");
-        return false;
-    }
+    bool reused_sensor = false;
 
-    ZB_RPC_LOG(k_tag, "Attempt to read manuf_code and model_id from device (0x%04x, 0x%02x)",
-               from_le16(sensor.short_addr), sensor.ep);
-    zb_basic_t basic{};
-    if (!call<desc::read_basic>(engine, sensor, basic) || from_le32_s(basic.err) != 0) {
-        ZB_RPC_LOG(k_tag, "Failed to read Basic attributes");
-        return false;
-    }
-    ZB_RPC_LOG(k_tag, "Model identifier: %s", basic.model);
-    ZB_RPC_LOG(k_tag, "Manufacturer name: %s", basic.manufacturer);
-
-    ZB_RPC_LOG(k_tag, "Attempt to bind temperature sensor device (0x%04x, 0x%02x) to local",
-               from_le16(sensor.short_addr), sensor.ep);
-    I32Resp bind_status{};
-    call<desc::bind_sensor>(engine, sensor, bind_status);
-    ZB_RPC_LOG(k_tag, "Attempt to subscribe temperature sensor device (0x%04x, 0x%02x) from local",
-               from_le16(sensor.short_addr), sensor.ep);
-    I32Resp subscribe_status{};
-    call<desc::subscribe_sensor>(engine, sensor, subscribe_status);
-    ZB_RPC_LOG(k_tag, "Bound HA temperature sensor device (0x%04x, 0x%02x) to local successfully",
-               from_le16(short_addr.value), sensor.ep);
-    ZB_RPC_LOG(k_tag, "Attempt to configure reporting for HA temperature sensor");
-    I32Resp report_status{};
-    call<desc::config_report>(engine, sensor, report_status);
-    ZB_RPC_LOG(k_tag, "Subscribed HA temperature sensor device (0x%04x, 0x%02x) from local successfully",
-               from_le16(sensor.short_addr), sensor.ep);
-
-    for (int i = 0; i < 5; ++i) {
-        I16Resp last{};
-        if (!call<desc::get_last_temp>(engine, last)) {
-            return false;
+    /* If this server already commissioned a sensor, skip OPEN_NETWORK and the
+     * DEVICE_ANNCE wait: the network is up and the device is known. */
+    if (probe_cached_sensor && from_le16(panid.value) != 0) {
+        U16Resp known{};
+        if (!call<desc::get_sensor_addr>(engine, known)) {
+            ZB_RPC_LOG(k_tag, "Server has no cached sensor API; reconnecting");
+            return RunResult::retry_without_cache;
+        } else {
+            const uint16_t known_addr = from_le16(known.value);
+            if (known_addr != 0) {
+                ZB_RPC_LOG(k_tag,
+                           "Network(0x%04x) on channel %u is already running; trying known sensor "
+                           "0x%04x",
+                           from_le16(panid.value), channel.value, known_addr);
+                FindSensorReq request{.short_addr = to_le16(known_addr)};
+                if (call<desc::find_sensor>(engine, request, sensor) &&
+                    from_le32_s(sensor.err) == 0) {
+                    reused_sensor = true;
+                    ZB_RPC_LOG(k_tag, "Reusing HA temperature sensor at (0x%04x, 0x%02x)",
+                               from_le16(sensor.short_addr), sensor.ep);
+                } else {
+                    ZB_RPC_LOG(k_tag,
+                               "Known sensor did not respond; falling back to commissioning");
+                }
+            }
         }
-        ZB_RPC_LOG(k_tag, "Temperature sensor measured value: %.2f degrees Celsius",
-                   to_celsius(from_le16_s(last.value)));
-        usleep(2000000);
+    }
+
+    if (!reused_sensor) {
+        OpenNetworkReq open{.duration = 180};
+        I32Resp open_status{};
+        if (!call<desc::open_network>(engine, open, open_status) ||
+            from_le32_s(open_status.value) != 0) {
+            ZB_RPC_LOG(k_tag, "Failed to open network");
+            return RunResult::failure;
+        }
+        ZB_RPC_LOG(k_tag, "Network(0x%04x) is open for %u seconds", from_le16(panid.value),
+                   open.duration);
+
+        U16Resp peer{};
+        if (!call<desc::wait_annce>(engine, peer) || from_le16(peer.value) == 0) {
+            ZB_RPC_LOG(k_tag, "Timed out waiting for DEVICE_ANNCE");
+            return RunResult::failure;
+        }
+        ZB_RPC_LOG(k_tag, "New device commissioned or rejoined (short: 0x%04x)",
+                   from_le16(peer.value));
+
+        ZB_RPC_LOG(k_tag, "Attempt to find HA temperature sensor device on address(0x%04x)",
+                   from_le16(peer.value));
+        if (!call<desc::find_sensor>(engine, FindSensorReq{.short_addr = peer.value}, sensor) ||
+            from_le32_s(sensor.err) != 0) {
+            ZB_RPC_LOG(k_tag, "Failed to find HA temperature sensor");
+            return RunResult::failure;
+        }
+
+        ZB_RPC_LOG(k_tag, "Attempt to read manuf_code and model_id from device (0x%04x, 0x%02x)",
+                   from_le16(sensor.short_addr), sensor.ep);
+        zb_basic_t basic{};
+        if (!call<desc::read_basic>(engine, sensor, basic) || from_le32_s(basic.err) != 0) {
+            ZB_RPC_LOG(k_tag, "Failed to read Basic attributes");
+            return RunResult::failure;
+        }
+        ZB_RPC_LOG(k_tag, "Model identifier: %s", basic.model);
+        ZB_RPC_LOG(k_tag, "Manufacturer name: %s", basic.manufacturer);
+
+        ZB_RPC_LOG(k_tag, "Attempt to bind temperature sensor device (0x%04x, 0x%02x) to local",
+                   from_le16(sensor.short_addr), sensor.ep);
+        I32Resp bind_status{};
+        call<desc::bind_sensor>(engine, sensor, bind_status);
+        ZB_RPC_LOG(k_tag,
+                   "Attempt to subscribe temperature sensor device (0x%04x, 0x%02x) from local",
+                   from_le16(sensor.short_addr), sensor.ep);
+        I32Resp subscribe_status{};
+        call<desc::subscribe_sensor>(engine, sensor, subscribe_status);
+        ZB_RPC_LOG(k_tag,
+                   "Bound HA temperature sensor device (0x%04x, 0x%02x) to local successfully",
+                   from_le16(sensor.short_addr), sensor.ep);
+        ZB_RPC_LOG(k_tag, "Attempt to configure reporting for HA temperature sensor");
+        I32Resp report_status{};
+        call<desc::config_report>(engine, sensor, report_status);
+        ZB_RPC_LOG(k_tag,
+                   "Subscribed HA temperature sensor device (0x%04x, 0x%02x) from local successfully",
+                   from_le16(sensor.short_addr), sensor.ep);
+
+        for (int i = 0; i < 5; ++i) {
+            I16Resp last{};
+            if (!call<desc::get_last_temp>(engine, last)) {
+                return RunResult::failure;
+            }
+            ZB_RPC_LOG(k_tag, "Temperature sensor measured value: %.2f degrees Celsius",
+                       to_celsius(from_le16_s(last.value)));
+            usleep(2000000);
+        }
     }
 
     zb_temp_t attrs{};
     if (!call<desc::read_temp>(engine, sensor, attrs) || from_le32_s(attrs.err) != 0) {
         ZB_RPC_LOG(k_tag, "Failed to read temperature attributes");
-        return false;
+        return RunResult::failure;
     }
-    ZB_RPC_LOG(k_tag, "Read Attributes of Temperature Measurement");
-    ZB_RPC_LOG(k_tag, "Measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.measured)));
-    ZB_RPC_LOG(k_tag, "Min measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.min_measured)));
-    ZB_RPC_LOG(k_tag, "Max measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.max_measured)));
-    return true;
+    print_temp_attrs(attrs);
+    return RunResult::success;
 }
 
 } // namespace
@@ -209,6 +323,7 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 1;
     }
+    install_signal_handlers();
 
     serial_io_t *serial =
         serial_io_open(options.device, options.baud, options.verbose ? 1 : 0);
@@ -235,21 +350,49 @@ int main(int argc, char **argv)
         return 1;
     }
     serial_io_attach(link, serial);
+    if (!ppp_link_start(link)) {
+        ppp_link_stop(link);
+        serial_io_close(serial);
+        ppp_link_destroy(link);
+        return 1;
+    }
 
     std::fprintf(stderr, "PPP server on %s @ %d; waiting for Zigbee RPC peer\n", options.device,
                  options.baud);
     bool success = false;
-    if (!wait_for_link(options.wait_seconds)) {
+    if (g_stop_requested) {
+        /* Interrupted while waiting for the PPP link. */
+    } else if (!wait_for_link(options.wait_seconds)) {
         std::fprintf(stderr, "PPP link timeout\n");
     } else {
         int socket_fd = connect_rpc(options.host, options.port);
         if (socket_fd >= 0) {
-            success = run_thermostat(socket_fd);
-            shutdown(socket_fd, SHUT_RDWR);
-            close(socket_fd);
+            g_rpc_socket = socket_fd;
+            RunResult result = RunResult::failure;
+            if (!g_stop_requested) {
+                result = run_thermostat(socket_fd, true);
+                if (result == RunResult::retry_without_cache && !g_stop_requested) {
+                    /* Reconnect and repeat with the pre-cache commissioning flow. */
+                    g_rpc_socket = -1;
+                    shutdown(socket_fd, SHUT_RDWR);
+                    close(socket_fd);
+                    socket_fd = connect_rpc(options.host, options.port);
+                    if (socket_fd >= 0) {
+                        g_rpc_socket = socket_fd;
+                        result = run_thermostat(socket_fd, false);
+                    }
+                }
+            }
+            if (socket_fd >= 0) {
+                g_rpc_socket = -1;
+                shutdown(socket_fd, SHUT_RDWR);
+                close(socket_fd);
+            }
+            success = result == RunResult::success;
         }
     }
 
+    ppp_link_stop(link);
     serial_io_close(serial);
     ppp_link_destroy(link);
     return success ? 0 : 1;

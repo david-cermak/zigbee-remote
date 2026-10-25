@@ -79,6 +79,7 @@ enum class api_id : uint32_t {
     config_report = 10,
     read_temp = 11,
     get_last_temp = 12,
+    get_sensor_addr = 13,
 };
 
 enum class error_code : uint32_t {
@@ -170,6 +171,7 @@ using subscribe_sensor = rpc_desc<api_id::subscribe_sensor, zb_addr_t, I32Resp>;
 using config_report = rpc_desc<api_id::config_report, zb_addr_t, I32Resp>;
 using read_temp = rpc_desc<api_id::read_temp, zb_addr_t, zb_temp_t>;
 using get_last_temp = rpc_desc<api_id::get_last_temp, EmptyReq, I16Resp>;
+using get_sensor_addr = rpc_desc<api_id::get_sensor_addr, EmptyReq, U16Resp>;
 } // namespace desc
 
 static_assert(sizeof(WireHeader) == 12);

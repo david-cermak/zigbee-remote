@@ -34,6 +34,7 @@ esp_err_t zigbee_stack_start(void);
 uint16_t zigbee_get_short_addr(void);
 uint16_t zigbee_get_panid(void);
 uint8_t zigbee_get_channel(void);
+uint16_t zigbee_get_sensor_addr(void);
 int32_t zigbee_open_network(uint8_t duration);
 uint16_t zigbee_wait_annce(uint32_t timeout_ms);
 zigbee_addr_t zigbee_find_sensor(uint16_t short_addr, uint32_t timeout_ms);

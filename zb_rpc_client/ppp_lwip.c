@@ -164,6 +164,11 @@ static int configure_ppp_server(ppp_pcb *pcb, const ppp_config_t *cfg)
 
     ppp_set_passive(pcb, 1);
 
+    /* This is a dedicated, short UART link: don't wait lwIP's default 6 s
+     * before retransmitting LCP/IPCP Configure-Requests.  A lost initial
+     * request would otherwise delay link-up by a full 6 s. */
+    pcb->settings.fsm_timeout_time = 1;
+
     pcb->ipcp_wantoptions.ouraddr = local_addr.addr;
     pcb->ipcp_wantoptions.accept_remote = 1;
     pcb->ask_for_local = 1;
@@ -207,6 +212,7 @@ static int configure_ppp_client(ppp_pcb *pcb, const ppp_config_t *cfg)
         return 0;
     }
 
+    pcb->settings.fsm_timeout_time = 1;
     ppp_set_usepeerdns(pcb, 1);
 
 #if VJ_SUPPORT
@@ -233,6 +239,33 @@ static int configure_ppp_client(ppp_pcb *pcb, const ppp_config_t *cfg)
 int ppp_link_is_up(void)
 {
     return s_link_up;
+}
+
+static void ppp_stop_tcpip(void *arg)
+{
+    ppp_close(ppp, 0);
+    sys_sem_signal((sys_sem_t *)arg);
+}
+
+void ppp_link_lwip_stop(void)
+{
+    if (!ppp) {
+        return;
+    }
+
+    if (s_use_tcpip) {
+        sys_sem_t done;
+        if (sys_sem_new(&done, 0) != ERR_OK) {
+            return;
+        }
+        if (tcpip_callback(ppp_stop_tcpip, &done) == ERR_OK) {
+            sys_sem_wait(&done);
+        }
+        sys_sem_free(&done);
+        return;
+    }
+
+    ppp_close(ppp, 0);
 }
 
 struct ppp_setup_ctx {
