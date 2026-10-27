@@ -11,9 +11,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifdef SINGLE_FILE_COMPILATION
+/* Header-only build for Compiler Explorer / plain `g++ main.cpp`:
+ * generate it with ./generate_single_file.py. */
+#include "header_zb_rpc_client.hpp"
+#else
 #include "ppp_link.h"
 #include "serial_io.h"
 #include "zb_rpc/engine.hpp"
+#endif
 
 namespace {
 

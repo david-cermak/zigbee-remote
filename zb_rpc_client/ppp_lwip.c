@@ -26,8 +26,14 @@
 
 #define BUF_SIZE 1518
 
-void ppp_init(void);
+#ifdef __cplusplus
+extern "C" {
+#endif
+int ppp_init(void);
 err_t lwip_ip4_input(struct pbuf *p, struct netif *inp);
+#ifdef __cplusplus
+}
+#endif
 
 static const unsigned char ip6_header[4] = { 0, 0, 0x86, 0xdd };
 static const unsigned char ip4_header[4] = { 0, 0, 0x08, 0 };

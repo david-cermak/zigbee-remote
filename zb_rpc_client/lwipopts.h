@@ -64,7 +64,9 @@
 
 #define TCP_LISTEN_BACKLOG         1
 
+#ifndef LWIP_COMPAT_SOCKETS
 #define LWIP_COMPAT_SOCKETS        1
+#endif
 #define LWIP_SO_RCVTIMEO           1
 #define LWIP_SO_RCVBUF             1
 
@@ -312,6 +314,9 @@ a lot of data that needs to be copied, this should be set high. */
 /* The following defines must be done even in OPTTEST mode: */
 
 #if !defined(NO_SYS) || !NO_SYS /* default is 0 */
+#ifdef __cplusplus
+extern "C" {
+#endif
 void sys_check_core_locking(void);
 #define LWIP_ASSERT_CORE_LOCKED()  sys_check_core_locking()
 void sys_mark_tcpip_thread(void);
@@ -322,6 +327,9 @@ void sys_lock_tcpip_core(void);
 #define LOCK_TCPIP_CORE()          sys_lock_tcpip_core()
 void sys_unlock_tcpip_core(void);
 #define UNLOCK_TCPIP_CORE()        sys_unlock_tcpip_core()
+#endif
+#ifdef __cplusplus
+}
 #endif
 #endif
 
