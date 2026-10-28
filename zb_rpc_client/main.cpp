@@ -18,12 +18,13 @@
 #else
 #include "ppp_link.h"
 #include "serial_io.h"
-#include "zb_rpc/engine.hpp"
+/* The RPC-backed version of the firmware Zigbee API, and the portable
+ * thermostat sequence that only uses that API. */
+#include "thermostat_app.hpp"
+#include "zigbee_api.h"
 #endif
 
 namespace {
-
-constexpr const char *k_tag = "THERMOSTAT";
 
 volatile sig_atomic_t g_stop_requested = 0;
 volatile sig_atomic_t g_rpc_socket = -1;
@@ -172,154 +173,6 @@ int connect_rpc(const char *host, uint16_t port)
     return -1;
 }
 
-float to_celsius(int16_t hundredths)
-{
-    return hundredths / 100.0f;
-}
-
-void print_temp_attrs(const zb_rpc::zb_temp_t &attrs)
-{
-    using namespace zb_rpc;
-    ZB_RPC_LOG(k_tag, "Read Attributes of Temperature Measurement");
-    ZB_RPC_LOG(k_tag, "Measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.measured)));
-    ZB_RPC_LOG(k_tag, "Min measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.min_measured)));
-    ZB_RPC_LOG(k_tag, "Max measured value: %.2f degrees Celsius",
-               to_celsius(from_le16_s(attrs.max_measured)));
-}
-
-enum class RunResult {
-    success,
-    failure,
-    /* The server predates get_sensor_addr and closed the connection after
-     * rejecting it; reconnect and use the old commissioning flow. */
-    retry_without_cache,
-};
-
-RunResult run_thermostat(int socket_fd, bool probe_cached_sensor)
-{
-    using namespace zb_rpc;
-    Engine engine(socket_fd);
-
-    ZB_RPC_LOG(k_tag, "Start ESP Zigbee Stack");
-    ZB_RPC_LOG(k_tag, "Initialize Zigbee stack");
-
-    U16Resp short_addr{};
-    U16Resp panid{};
-    U8Resp channel{};
-    if (!call<desc::get_short_addr>(engine, short_addr) ||
-        !call<desc::get_panid>(engine, panid) || !call<desc::get_channel>(engine, channel)) {
-        return RunResult::failure;
-    }
-
-    zb_addr_t sensor{};
-    bool reused_sensor = false;
-
-    /* If this server already commissioned a sensor, skip OPEN_NETWORK and the
-     * DEVICE_ANNCE wait: the network is up and the device is known. */
-    if (probe_cached_sensor && from_le16(panid.value) != 0) {
-        U16Resp known{};
-        if (!call<desc::get_sensor_addr>(engine, known)) {
-            ZB_RPC_LOG(k_tag, "Server has no cached sensor API; reconnecting");
-            return RunResult::retry_without_cache;
-        } else {
-            const uint16_t known_addr = from_le16(known.value);
-            if (known_addr != 0) {
-                ZB_RPC_LOG(k_tag,
-                           "Network(0x%04x) on channel %u is already running; trying known sensor "
-                           "0x%04x",
-                           from_le16(panid.value), channel.value, known_addr);
-                FindSensorReq request{.short_addr = to_le16(known_addr)};
-                if (call<desc::find_sensor>(engine, request, sensor) &&
-                    from_le32_s(sensor.err) == 0) {
-                    reused_sensor = true;
-                    ZB_RPC_LOG(k_tag, "Reusing HA temperature sensor at (0x%04x, 0x%02x)",
-                               from_le16(sensor.short_addr), sensor.ep);
-                } else {
-                    ZB_RPC_LOG(k_tag,
-                               "Known sensor did not respond; falling back to commissioning");
-                }
-            }
-        }
-    }
-
-    if (!reused_sensor) {
-        OpenNetworkReq open{.duration = 180};
-        I32Resp open_status{};
-        if (!call<desc::open_network>(engine, open, open_status) ||
-            from_le32_s(open_status.value) != 0) {
-            ZB_RPC_LOG(k_tag, "Failed to open network");
-            return RunResult::failure;
-        }
-        ZB_RPC_LOG(k_tag, "Network(0x%04x) is open for %u seconds", from_le16(panid.value),
-                   open.duration);
-
-        U16Resp peer{};
-        if (!call<desc::wait_annce>(engine, peer) || from_le16(peer.value) == 0) {
-            ZB_RPC_LOG(k_tag, "Timed out waiting for DEVICE_ANNCE");
-            return RunResult::failure;
-        }
-        ZB_RPC_LOG(k_tag, "New device commissioned or rejoined (short: 0x%04x)",
-                   from_le16(peer.value));
-
-        ZB_RPC_LOG(k_tag, "Attempt to find HA temperature sensor device on address(0x%04x)",
-                   from_le16(peer.value));
-        if (!call<desc::find_sensor>(engine, FindSensorReq{.short_addr = peer.value}, sensor) ||
-            from_le32_s(sensor.err) != 0) {
-            ZB_RPC_LOG(k_tag, "Failed to find HA temperature sensor");
-            return RunResult::failure;
-        }
-
-        ZB_RPC_LOG(k_tag, "Attempt to read manuf_code and model_id from device (0x%04x, 0x%02x)",
-                   from_le16(sensor.short_addr), sensor.ep);
-        zb_basic_t basic{};
-        if (!call<desc::read_basic>(engine, sensor, basic) || from_le32_s(basic.err) != 0) {
-            ZB_RPC_LOG(k_tag, "Failed to read Basic attributes");
-            return RunResult::failure;
-        }
-        ZB_RPC_LOG(k_tag, "Model identifier: %s", basic.model);
-        ZB_RPC_LOG(k_tag, "Manufacturer name: %s", basic.manufacturer);
-
-        ZB_RPC_LOG(k_tag, "Attempt to bind temperature sensor device (0x%04x, 0x%02x) to local",
-                   from_le16(sensor.short_addr), sensor.ep);
-        I32Resp bind_status{};
-        call<desc::bind_sensor>(engine, sensor, bind_status);
-        ZB_RPC_LOG(k_tag,
-                   "Attempt to subscribe temperature sensor device (0x%04x, 0x%02x) from local",
-                   from_le16(sensor.short_addr), sensor.ep);
-        I32Resp subscribe_status{};
-        call<desc::subscribe_sensor>(engine, sensor, subscribe_status);
-        ZB_RPC_LOG(k_tag,
-                   "Bound HA temperature sensor device (0x%04x, 0x%02x) to local successfully",
-                   from_le16(sensor.short_addr), sensor.ep);
-        ZB_RPC_LOG(k_tag, "Attempt to configure reporting for HA temperature sensor");
-        I32Resp report_status{};
-        call<desc::config_report>(engine, sensor, report_status);
-        ZB_RPC_LOG(k_tag,
-                   "Subscribed HA temperature sensor device (0x%04x, 0x%02x) from local successfully",
-                   from_le16(sensor.short_addr), sensor.ep);
-
-        for (int i = 0; i < 5; ++i) {
-            I16Resp last{};
-            if (!call<desc::get_last_temp>(engine, last)) {
-                return RunResult::failure;
-            }
-            ZB_RPC_LOG(k_tag, "Temperature sensor measured value: %.2f degrees Celsius",
-                       to_celsius(from_le16_s(last.value)));
-            usleep(2000000);
-        }
-    }
-
-    zb_temp_t attrs{};
-    if (!call<desc::read_temp>(engine, sensor, attrs) || from_le32_s(attrs.err) != 0) {
-        ZB_RPC_LOG(k_tag, "Failed to read temperature attributes");
-        return RunResult::failure;
-    }
-    print_temp_attrs(attrs);
-    return RunResult::success;
-}
-
 } // namespace
 
 int main(int argc, char **argv)
@@ -374,27 +227,31 @@ int main(int argc, char **argv)
         int socket_fd = connect_rpc(options.host, options.port);
         if (socket_fd >= 0) {
             g_rpc_socket = socket_fd;
-            RunResult result = RunResult::failure;
+            zigbee_rpc::attach(socket_fd);
+            thermostat_app::Result result = thermostat_app::Result::failure;
             if (!g_stop_requested) {
-                result = run_thermostat(socket_fd, true);
-                if (result == RunResult::retry_without_cache && !g_stop_requested) {
+                result = thermostat_app::run(true);
+                if (result == thermostat_app::Result::retry_without_cache && !g_stop_requested) {
                     /* Reconnect and repeat with the pre-cache commissioning flow. */
+                    zigbee_rpc::detach();
                     g_rpc_socket = -1;
                     shutdown(socket_fd, SHUT_RDWR);
                     close(socket_fd);
                     socket_fd = connect_rpc(options.host, options.port);
                     if (socket_fd >= 0) {
                         g_rpc_socket = socket_fd;
-                        result = run_thermostat(socket_fd, false);
+                        zigbee_rpc::attach(socket_fd);
+                        result = thermostat_app::run(false);
                     }
                 }
             }
+            zigbee_rpc::detach();
             if (socket_fd >= 0) {
                 g_rpc_socket = -1;
                 shutdown(socket_fd, SHUT_RDWR);
                 close(socket_fd);
             }
-            success = result == RunResult::success;
+            success = result == thermostat_app::Result::success;
         }
     }
 

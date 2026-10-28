@@ -1,5 +1,9 @@
 #pragma once
 
+/* Keep the declarations below in sync with
+ * zb_rpc_client/include/zigbee_api.h, which implements the same functions
+ * over RPC for the Linux client. */
+
 #include <stdbool.h>
 #include <stdint.h>
 

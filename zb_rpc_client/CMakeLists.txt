@@ -69,6 +69,8 @@ if(ZB_RPC_CLIENT_SINGLE_FILE)
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/generate_single_file.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include/zigbee_api.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include/thermostat_app.hpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/ppp_link.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/ppp_lwip.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/serial_io.c"

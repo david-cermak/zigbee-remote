@@ -2,8 +2,9 @@
 """Generate a single-file (header-only) version of the zb_rpc client.
 
 The generated header contains the RPC engine headers, the client's C support
-files (serial + PPP) and the lwIP sources they need.  main.cpp can then be
-compiled as a single translation unit:
+files (serial + PPP), the lwIP sources they need, and the client-side
+`zigbee_api.h` / `thermostat_app.hpp` headers.  main.cpp can then be compiled
+as a single translation unit:
 
     g++ -std=c++26 -freflection -fpermissive -w -pthread \
         -DSINGLE_FILE_COMPILATION main.cpp -o zb_rpc_client
@@ -34,6 +35,14 @@ CLIENT_SOURCES = [
 EXTRA_HEADERS = [
     "zb_rpc/engine.hpp",
     "zb_rpc/log.hpp",
+]
+
+# Client-side headers providing the firmware-style Zigbee API and the
+# portable application sequence.  They must be embedded in the generated
+# header because SINGLE_FILE_COMPILATION only includes that header.
+CLIENT_EXTRA_HEADERS = [
+    "zigbee_api.h",
+    "thermostat_app.hpp",
 ]
 
 # ip4.c is renamed in the CMake build via -D ip4_input=lwip_ip4_input because
@@ -225,6 +234,7 @@ def main() -> int:
     sources = [client_dir / name for name in CLIENT_SOURCES]
     sources += lwip_sources(lwip_dir)
     extra_headers = [repo_dir / "zb_rpc_shared" / "include" / name for name in EXTRA_HEADERS]
+    extra_headers += [client_dir / "include" / name for name in CLIENT_EXTRA_HEADERS]
 
     amalgamator = Amalgamator(roots)
 

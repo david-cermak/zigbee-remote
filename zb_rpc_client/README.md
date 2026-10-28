@@ -23,12 +23,42 @@ cmake --build build -j
 ./build/zb_rpc_client --device /dev/ttyUSB1
 ```
 
+## Firmware-style API
+
+`include/zigbee_api.h` implements the same small API as
+`../zb_rpc_server/main/zigbee_api.h`, but over RPC.  Application code can now
+call plain functions instead of building wire structs and converting
+endianness:
+
+```cpp
+zigbee_rpc::attach(socket_fd);
+
+uint16_t panid = zigbee_get_panid();
+int32_t err = zigbee_open_network(180);
+zigbee_addr_t sensor = zigbee_find_sensor(peer_short, 15000);
+zigbee_temp_t temp = zigbee_read_temp(sensor.short_addr, sensor.ep, 15000);
+
+zigbee_rpc::detach();
+```
+
+The timeout arguments are kept so the signatures match the firmware; the RPC
+server currently applies its own fixed request/announcement windows.
+
+`include/thermostat_app.hpp` is the complete thermostat sequence written only
+against that API.  It has no socket, PPP or RPC dependencies, so it can be
+copied to the coordinator firmware (for example a future `zb-coordinator`
+project) and compiled against the native `zigbee_api.h`.  On firmware it uses
+`ESP_LOGI` and `vTaskDelay` automatically; override `ZB_APP_LOG` /
+`ZB_APP_SLEEP_MS` if needed.
+
 ## Single-file build (Compiler Explorer)
 
 `generate_single_file.py` embeds the RPC headers, the serial/PPP sources and
-the required lwIP sources into `header_zb_rpc_client.hpp`.  `main.cpp` includes
-that header when `SINGLE_FILE_COMPILATION` is defined, so the client can be
-built from a single translation unit:
+the required lwIP sources into `header_zb_rpc_client.hpp`.  It also embeds
+`include/zigbee_api.h` and `include/thermostat_app.hpp`, so code in `main.cpp`
+can call the firmware-style API directly.  `main.cpp` includes that header when
+`SINGLE_FILE_COMPILATION` is defined, so the client can be built from a single
+translation unit:
 
 ```bash
 ./generate_single_file.py                 # uses $LWIP_DIR or ../lwip
