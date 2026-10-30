@@ -16,7 +16,7 @@
 #include "netif/ppp/ppp.h"
 #include "sdkconfig.h"
 
-#define PPP_UART_PORT UART_NUM_1
+#define PPP_UART_PORT UART_NUM_0
 #define PPP_LINK_UP BIT0
 #define PPP_UART_PHASE_DEAD BIT1
 #define PPP_RX_CHUNK_SIZE 1024
