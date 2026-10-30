@@ -16,7 +16,11 @@
 #include "netif/ppp/ppp.h"
 #include "sdkconfig.h"
 
-#define PPP_UART_PORT UART_NUM_0
+#if CONFIG_ESP_CONSOLE_UART && CONFIG_ESP_CONSOLE_UART_NUM == CONFIG_PPP_UART_NUM
+#error "PPP UART and console UART are the same; select a different PPP UART number or console"
+#endif
+
+#define PPP_UART_PORT ((uart_port_t)CONFIG_PPP_UART_NUM)
 #define PPP_LINK_UP BIT0
 #define PPP_UART_PHASE_DEAD BIT1
 #define PPP_RX_CHUNK_SIZE 1024

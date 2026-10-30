@@ -1,13 +1,28 @@
 menu "PPP UART Zigbee RPC server"
 
+    config PPP_UART_NUM
+        int "PPP UART port number"
+        range 0 1
+        default 0
+        help
+            UART peripheral used by PPP. The console (idf.py monitor) must use
+            the other UART.
+
+            With a single USB-UART cable (default) PPP runs on UART0, using the
+            ESP32-H2 default UART0 pins, and the console is moved to UART1.
+            For two cables, keep the console on UART0 and set this to 1 so PPP
+            uses UART1 on the custom pins below.
+
     config PPP_UART_TX_PIN
         int "PPP UART TX pin"
         range 0 27
+        default 24 if PPP_UART_NUM = 0
         default 10
 
     config PPP_UART_RX_PIN
         int "PPP UART RX pin"
         range 0 27
+        default 23 if PPP_UART_NUM = 0
         default 11
 
     config PPP_UART_BAUD_RATE
