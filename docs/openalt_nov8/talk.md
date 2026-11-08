@@ -49,9 +49,39 @@ style: |
 
 * Where the C++ comes in
 
-<!--
-Keep the C++ part late and short. The talk is about the pattern, not the feature.
--->
+---
+
+
+![width:1024px](./host-slave-2.png)
+
+---
+
+
+![width:1024px](./host-slave-1.png)
+
+---
+
+
+![width:1024px](./host-slave.png)
+
+---
+
+# Wifi-remote pattern
+
+Wi-Fi RPC between two nodes: **Host** and **Slave**.
+The host **reflects** the slave's API.
+
+![width:1024px](./eppp.webp)
+
+---
+
+# Wifi-remote pattern
+
+* Specific radio chip
+* General purpose mico
+
+![bg left width:760px](./ESP32-P4-Pi.jpg)
+
 
 ---
 # Maya and Zig-bee
@@ -174,26 +204,6 @@ void    esp_zb_zdo_device_bind_req(esp_zb_zdo_bind_req_param_t *req, cb_t cb, vo
 
 Asynchronous: requests go out, callbacks/signals come back.
 
-
----
-
-# Abstraction vs. Reflection
-
-
-### AUTOSAR/MCAL (Hardware Abstraction)
-
-MCAL (Microcontroller Abstraction Layer) provides standard API to the upper  layers.
-* Hide the chip-specific register complexities. Because of this abstraction, 
-* Swap a Renesas for an NXP chip; leave the app code untouched.
-
-### zigbee-remote (Opposite approach)
-
-* Reflects the actual SDK API onto the host
-* Host uses this API, it doesn't need a simplified API
-
-Abstraction hides the device. Reflection **exposes** it, one hop away.
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<small>transparent proxy vs. gateway</small>
-
 ---
 
 # "Reflection" here means two things
@@ -217,7 +227,28 @@ struct zb_temp_t {          // firmware and host: identical layout
 
 ---
 
-# Architecture
+# Abstraction vs. Reflection
+
+
+### AUTOSAR/MCAL (Hardware Abstraction)
+
+MCAL (Microcontroller Abstraction Layer) provides standard API to the upper  layers.
+* Hide the chip-specific register complexities. Because of this abstraction, 
+* Swap a Renesas for an NXP chip; leave the app code untouched.
+
+### zigbee-remote (Opposite approach)
+
+* Reflects the actual SDK API onto the host
+* Host uses this API, it doesn't need a simplified API
+
+Abstraction hides the device. Reflection **exposes** it, one hop away.
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<small>transparent proxy vs. gateway</small>
+
+
+---
+
+# Demo (1/3)
 
 ```
   [ temperature sensor ]
@@ -240,22 +271,60 @@ struct zb_temp_t {          // firmware and host: identical layout
 Host = client. Slave = server. The Zigbee stack never leaves the chip.
 
 ---
-# Use case 1: the wifi-remote pattern
 
-![width:760px](./ESP32-P4-Pi.jpg)
+# Demo (2/3)
 
----
 
-# Use case 1: the wifi-remote pattern
-
-Wi-Fi RPC between two nodes: **Host** and **Slave**.
-The host **reflects** the slave's API.
-
-![width:1024px](./eppp.webp)
+1. ESP boots, forms the network, prints PAN ID / channel / short address
+2. Laptop connects over PPP, opens the network for 180 s
+3. Sensor joins → `DEVICE_ANNCE` → find → Basic read → bind → report config
+4. Temperature reports arrive; the app prints degrees Celsius
+5. Same binary logic, same source, running on two very different machines
 
 ---
 
-# Use case 2: Zigbee remote
+# Demoe (3/3)
+
+```cpp
+zigbee_rpc::attach(fd);                          // laptop only
+
+uint16_t panid = zigbee_get_panid();             // 0x4c19
+zigbee_open_network(180);                        // permit join
+uint16_t peer  = zigbee_wait_annce(180000);      // 0x1956 joined
+auto sensor    = zigbee_find_sensor(peer, 15000); // match descriptor
+auto basic     = zigbee_read_basic(sensor.short_addr, sensor.ep, 15000);
+zigbee_bind_sensor(sensor.short_addr, sensor.ep, 15000);
+zigbee_config_report(sensor.short_addr, sensor.ep, 15000);
+auto temp      = zigbee_read_temp(sensor.short_addr, sensor.ep, 15000);
+```
+
+---
+
+# Thank you
+
+## Takeaway
+
+* Reflection and C++26 reflection
+* Dual chip solution
+* Prototype on your PC
+  - Compiler explorer used as jupyter notebook
+  - Prototype as you type
+  - Copy the code from CE -> Paste to FW
+
+---
+
+# Links
+
+| | |
+| --- | --- |
+| Repo | https://github.com/david-cermak/zigbee-remote |
+| ESP Zigbee SDK | https://github.com/espressif/esp-zigbee-sdk |
+| SDK docs | https://docs.espressif.com/projects/esp-zigbee-sdk |
+| IEEE 802.15.4 | https://en.wikipedia.org/wiki/IEEE_802.15.4 |
+
+---
+
+# Zigbee remote
 
 Same shape, different pipe.
 
@@ -403,16 +472,6 @@ auto temp      = zigbee_read_temp(sensor.short_addr, sensor.ep, 15000);
 
 On the H2 each line becomes `ezb_*` / `esp_zb_*`. On the laptop, an RPC frame.
 
----
-
-# Demo
-
-
-1. ESP boots, forms the network, prints PAN ID / channel / short address
-2. Laptop connects over PPP, opens the network for 180 s
-3. Sensor joins → `DEVICE_ANNCE` → find → Basic read → bind → report config
-4. Temperature reports arrive; the app prints degrees Celsius
-5. Same binary logic, same source, running on two very different machines
 
 
 <!--
